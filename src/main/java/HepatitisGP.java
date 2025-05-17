@@ -2,6 +2,7 @@
 import java.io.*;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public class HepatitisGP {
     // Configuration parameters
@@ -20,6 +21,18 @@ public class HepatitisGP {
     private static String[] featureNames = {"AGE", "SEX", "STEROID", "ANTIVIRALS", "FATIGUE", "MALAISE",
             "ANOREXIA", "LIVER BIG", "LIVER FIRM", "SPLEEN PALPABLE", "SPIDERS", "ASCITES",
             "VARICES", "BILIRUBIN", "ALK PHOSPHATE", "SGOT", "ALBUMIN", "PROTIME", "HISTOLOGY"};
+
+    // Add these static variables
+    private static final List<double[]> trainFeatures = new ArrayList<>();
+    private static final List<Integer> trainTargets = new ArrayList<>();
+    private static final List<double[]> testFeatures = new ArrayList<>();
+    private static final List<Integer> testTargets = new ArrayList<>();
+
+    // Add to class variables
+    private static final List<Double> tradGP_train = new ArrayList<>();
+    private static final List<Double> tradGP_test = new ArrayList<>();
+    private static final List<Double> structGP_train = new ArrayList<>();
+    private static final List<Double> structGP_test = new ArrayList<>();
 
     // Function and terminal sets
     private enum NodeType { FUNCTION, TERMINAL }
@@ -75,42 +88,104 @@ public class HepatitisGP {
     private static final Random random = new Random();
 
     public static void main(String[] args) throws IOException {
-        // Load dataset
         loadDataset("hepatitis.csv");
 
-        System.out.println("Dataset loaded. Features: " + features.size() + ", Targets: " + targets.size());
-
-        // Run regular GP
         System.out.println("\n=== Running Regular GP ===");
         runGP(false);
 
-        // Run structure-based GP
         System.out.println("\n=== Running Structure-Based GP ===");
         runGP(true);
+
+        compareResults();
     }
 
     private static void loadDataset(String filename) throws IOException {
+        List<double[]> allFeatures = new ArrayList<>();
+        List<Integer> allTargets = new ArrayList<>();
 
         try (InputStream inputStream = HepatitisGP.class.getResourceAsStream(filename)) {
             BufferedReader br = new BufferedReader(new InputStreamReader(inputStream));
-            // Skip header
-            br.readLine();
+            br.readLine(); // Skip header
 
             String line;
             while ((line = br.readLine()) != null) {
                 String[] values = line.split(",");
-
-                // Create feature vector
                 double[] featureVector = new double[featureNames.length];
                 for (int i = 0; i < featureNames.length; i++) {
                     featureVector[i] = Double.parseDouble(values[i]);
                 }
-                features.add(featureVector);
-
-                // Add target class (last column)
-                targets.add(Integer.parseInt(values[values.length - 1]));
+                allFeatures.add(featureVector);
+                allTargets.add(Integer.parseInt(values[values.length - 1]));
             }
         }
+
+        // Split into train/test sets
+        List<Integer> indices = IntStream.range(0, allFeatures.size())
+                .boxed()
+                .collect(Collectors.toList());
+        Collections.shuffle(indices);
+
+        int splitPoint = (int) (allFeatures.size() * 0.7);
+
+        for (int i = 0; i < indices.size(); i++) {
+            int idx = indices.get(i);
+            if (i < splitPoint) {
+                trainFeatures.add(allFeatures.get(idx));
+                trainTargets.add(allTargets.get(idx));
+            } else {
+                testFeatures.add(allFeatures.get(idx));
+                testTargets.add(allTargets.get(idx));
+            }
+        }
+
+        System.out.println("Dataset loaded. Training: " + trainFeatures.size()
+                + ", Test: " + testFeatures.size());
+    }
+
+    // Add to the HepatitisGP class
+    private static void printConfusionMatrix(Node bestIndividual) {
+        int tp = 0, tn = 0, fp = 0, fn = 0;
+
+        // Assume class 2 is "positive" (hepatitis positive)
+        // Class 1 is "negative" (hepatitis negative)
+        for (int i = 0; i < testFeatures.size(); i++) {
+            double result = evaluate(bestIndividual, testFeatures.get(i));
+            int expected = testTargets.get(i);
+            int predicted = result > 0 ? 2 : 1;
+
+            if (expected == 2 && predicted == 2) tp++;
+            if (expected == 1 && predicted == 1) tn++;
+            if (expected == 1 && predicted == 2) fp++;
+            if (expected == 2 && predicted == 1) fn++;
+        }
+
+        // Calculate metrics
+        int total = testFeatures.size();
+        double accuracy = (double)(tp + tn) / total;
+        double precision = (double)tp / (tp + fp);
+        double recall = (double)tp / (tp + fn);
+        double f1 = 2 * (precision * recall) / (precision + recall);
+
+        System.out.println("\n┌───────────── Confusion Matrix For Test Set──────────┐");
+        System.out.println("│                      Predicted                      │");
+        System.out.println("├─────────────┬───────────────────────┬───────────────┤");
+        System.out.println("│ Actual      │        Negative (1)   │  Positive (2) │");
+        System.out.println("├─────────────┼───────────────────────┼───────────────┤");
+        System.out.printf("│ Negative (1)│ %16d (TN) │ %6d (FP)   │\n", tn, fp);
+        System.out.println("├─────────────┼───────────────────────┼───────────────┤");
+        System.out.printf("│ Positive (2)│ %16d (FN) │ %6d (TP)   │\n", fn, tp);
+        System.out.println("└─────────────┴───────────────────────┴───────────────┘");
+
+        System.out.println("\nMetrics:");
+        System.out.printf("│ Accuracy  │ %.2f%% │ Correct predictions overall\n", accuracy * 100);
+        System.out.printf("│ Precision │ %.2f%% │ Positive predictions that were correct\n", precision * 100);
+        System.out.printf("│ Recall    │ %.2f%% │ Actual positives correctly identified\n", recall * 100);
+        System.out.printf("│ F1 Score  │ %.2f%% │ Balance between precision and recall\n", f1 * 100);
+
+        // Class distribution analysis
+        System.out.println("\nClass Distribution:");
+        System.out.printf("│ Total Negative (1) │ %d (%.2f%%)\n", tn + fp, 100.0*(tn + fp)/total);
+        System.out.printf("│ Total Positive (2) │ %d (%.2f%%)\n", tp + fn, 100.0*(tp + fn)/total);
     }
 
     private static void runGP(boolean structureBased) {
@@ -120,7 +195,7 @@ public class HepatitisGP {
         List<Double> accuracies = new ArrayList<>();
 
         // Perform 10 runs
-        for (int run = 0; run < 10; run++) {
+        for (int run = 0; run < 1; run++) {
             System.out.println("Run " + (run + 1) + " of 10");
 
             // Initialize population
@@ -219,6 +294,20 @@ public class HepatitisGP {
                 }
             }
 
+            // Inside runGP method, before the final accuracy calculation:
+            double trainAccuracy = fitness(bestIndividual);
+            double testAccuracy = calculateAccuracy(bestIndividual);
+
+            if (structureBased) {
+                structGP_train.add(trainAccuracy);
+                structGP_test.add(testAccuracy);
+            } else {
+                tradGP_train.add(trainAccuracy);
+                tradGP_test.add(testAccuracy);
+            }
+
+            printConfusionMatrix(bestIndividual);
+
             // Calculate accuracy on the dataset
             double accuracy = calculateAccuracy(bestIndividual);
             System.out.printf("Run %d final: Best fitness = %.4f, Accuracy = %.2f%%, Best program: %s%n",
@@ -238,6 +327,35 @@ public class HepatitisGP {
         System.out.println("\n=== Summary for " + (structureBased ? "Structure-Based GP" : "Regular GP") + " ===");
         System.out.printf("Best Fitness: Avg = %.4f, StdDev = %.4f%n", bestFitnessAvg, bestFitnessStd);
         System.out.printf("Accuracy: Avg = %.2f%%, StdDev = %.2f%%%n", accuracyAvg * 100, accuracyStd * 100);
+    }
+
+    private static void compareResults() {
+        System.out.println("\n=== Final Comparison ===");
+
+        printStats("Traditional GP", tradGP_train, tradGP_test);
+        printStats("Structured GP", structGP_train, structGP_test);
+
+        System.out.println("\nKey Observations:");
+        System.out.println("- Δ Train-Test Gap: " + String.format("%.2f%% vs %.2f%%",
+                avg(tradGP_train) - avg(tradGP_test),
+                avg(structGP_train) - avg(structGP_test)));
+    }
+
+    private static void printStats(String name, List<Double> train, List<Double> test) {
+        System.out.println("\n" + name + ":");
+        System.out.printf("Train Accuracy: %.2f%% ± %.2f%%%n", avg(train)*100, stddev(train)*100);
+        System.out.printf("Test Accuracy:  %.2f%% ± %.2f%%%n", avg(test)*100, stddev(test)*100);
+    }
+
+    private static double avg(List<? extends Number> list) {
+        return list.stream().mapToDouble(Number::doubleValue).average().orElse(0);
+    }
+
+    private static double stddev(List<? extends Number> list) {
+        double avg = avg(list);
+        return Math.sqrt(list.stream()
+                .mapToDouble(v -> Math.pow(v.doubleValue() - avg, 2))
+                .average().orElse(0));
     }
 
     private static double calculateStdDev(List<Double> values, double mean) {
@@ -304,23 +422,26 @@ public class HepatitisGP {
 
     private static double fitness(Node individual) {
         int correct = 0;
-
-        for (int i = 0; i < features.size(); i++) {
-            double result = evaluate(individual, features.get(i));
-
-            // Classification: > 0 means class 2, <= 0 means class 1
+        for (int i = 0; i < trainFeatures.size(); i++) {
+            double result = evaluate(individual, trainFeatures.get(i));
             int predicted = result > 0 ? 2 : 1;
-            if (predicted == targets.get(i)) {
+            if (predicted == trainTargets.get(i)) {
                 correct++;
             }
         }
-
-        // Calculate accuracy as fitness
-        return (double) correct / features.size();
+        return (double) correct / trainFeatures.size();
     }
 
     private static double calculateAccuracy(Node individual) {
-        return fitness(individual);  // Same as fitness in this case
+        int correct = 0;
+        for (int i = 0; i < testFeatures.size(); i++) {
+            double result = evaluate(individual, testFeatures.get(i));
+            int predicted = result > 0 ? 2 : 1;
+            if (predicted == testTargets.get(i)) {
+                correct++;
+            }
+        }
+        return (double) correct / testFeatures.size();
     }
 
     private static double evaluate(Node node, double[] featureVector) {
