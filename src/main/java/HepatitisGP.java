@@ -1,8 +1,6 @@
+
 import java.io.*;
-import java.text.DecimalFormat;
 import java.util.*;
-import java.util.function.BiFunction;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class HepatitisGP {
@@ -61,7 +59,7 @@ public class HepatitisGP {
     }
 
     // Function set definition
-    private static Map<String, Integer> functions = new HashMap<>() {{
+    private static final Map<String, Integer> functions = new HashMap<>() {{
         put("+", 2);
         put("-", 2);
         put("*", 2);
@@ -160,7 +158,7 @@ public class HepatitisGP {
                 Map<Node, Double> finalFitnesses = fitnesses;
                 List<Node> sortedPopulation = population.stream()
                         .sorted((a, b) -> Double.compare(finalFitnesses.getOrDefault(b, 0.0), finalFitnesses.getOrDefault(a, 0.0)))
-                        .collect(Collectors.toList());
+                        .toList();
 
                 for (int i = 0; i < eliteCount; i++) {
                     newPopulation.add(new Node(sortedPopulation.get(i)));
@@ -417,55 +415,63 @@ public class HepatitisGP {
 
     // Structure-Based GP crossover - preserves tree structure
     private static void structureCrossover(Node parent1, Node parent2) {
-        // Find all nodes of the same type (function/terminal) in both trees
+        // First try to perform function crossover with common arity
+        Map<Integer, List<Node>> arityMap1 = new HashMap<>();
+        Map<Integer, List<Node>> arityMap2 = new HashMap<>();
+        collectFunctionsByArity(parent1, arityMap1);
+        collectFunctionsByArity(parent2, arityMap2);
+
+        Set<Integer> commonArities = new HashSet<>(arityMap1.keySet());
+        commonArities.retainAll(arityMap2.keySet());
+
+        if (!commonArities.isEmpty()) {
+            Integer selectedArity = commonArities.stream()
+                    .skip(random.nextInt(commonArities.size()))
+                    .findFirst()
+                    .orElse(null);
+
+            List<Node> candidates1 = arityMap1.get(selectedArity);
+            List<Node> candidates2 = arityMap2.get(selectedArity);
+
+            Node node1 = candidates1.get(random.nextInt(candidates1.size()));
+            Node node2 = candidates2.get(random.nextInt(candidates2.size()));
+
+            // Swap function names
+            String temp = node1.value;
+            node1.value = node2.value;
+            node2.value = temp;
+            return;
+        }
+
+        // If no common function arities, try terminal crossover
         Map<NodeType, List<Node>> typeNodes1 = getNodesByType(parent1);
         Map<NodeType, List<Node>> typeNodes2 = getNodesByType(parent2);
 
-        // Try to perform function-to-function or terminal-to-terminal crossover
-        for (NodeType type : NodeType.values()) {
-            List<Node> nodes1 = typeNodes1.getOrDefault(type, Collections.emptyList());
-            List<Node> nodes2 = typeNodes2.getOrDefault(type, Collections.emptyList());
+        List<Node> terminals1 = typeNodes1.getOrDefault(NodeType.TERMINAL, Collections.emptyList());
+        List<Node> terminals2 = typeNodes2.getOrDefault(NodeType.TERMINAL, Collections.emptyList());
 
-            if (!nodes1.isEmpty() && !nodes2.isEmpty()) {
-                // Select random nodes of the same type
-                Node node1 = nodes1.get(random.nextInt(nodes1.size()));
-                Node node2 = nodes2.get(random.nextInt(nodes2.size()));
-
-                // If they are function nodes, ensure they have the same arity
-                if (type == NodeType.FUNCTION) {
-                    // Try to find compatible functions (same arity)
-                    Node finalNode = node2;
-                    List<Node> compatibleNodes1 = nodes1.stream()
-                            .filter(n -> functions.get(n.value).equals(functions.get(finalNode.value)))
-                            .collect(Collectors.toList());
-
-                    Node finalNode1 = node1;
-                    List<Node> compatibleNodes2 = nodes2.stream()
-                            .filter(n -> functions.get(n.value).equals(functions.get(finalNode1.value)))
-                            .collect(Collectors.toList());
-
-                    if (!compatibleNodes1.isEmpty() && !compatibleNodes2.isEmpty()) {
-                        node1 = compatibleNodes1.get(random.nextInt(compatibleNodes1.size()));
-                        node2 = compatibleNodes2.get(random.nextInt(compatibleNodes2.size()));
-
-                        // Swap function names but keep children structure
-                        String temp = node1.value;
-                        node1.value = node2.value;
-                        node2.value = temp;
-                        return;
-                    }
-                } else {
-                    // For terminals, just swap values
-                    String temp = node1.value;
-                    node1.value = node2.value;
-                    node2.value = temp;
-                    return;
-                }
-            }
+        if (!terminals1.isEmpty() && !terminals2.isEmpty()) {
+            Node term1 = terminals1.get(random.nextInt(terminals1.size()));
+            Node term2 = terminals2.get(random.nextInt(terminals2.size()));
+            // Swap terminal values
+            String temp = term1.value;
+            term1.value = term2.value;
+            term2.value = temp;
+            return;
         }
 
-        // If structured crossover failed, fall back to regular crossover
+        // Fall back to regular crossover if no structure-based crossover possible
         crossover(parent1, parent2);
+    }
+
+    private static void collectFunctionsByArity(Node node, Map<Integer, List<Node>> arityMap) {
+        if (node.type == NodeType.FUNCTION) {
+            int arity = functions.get(node.value);
+            arityMap.computeIfAbsent(arity, k -> new ArrayList<>()).add(node);
+        }
+        for (Node child : node.children) {
+            collectFunctionsByArity(child, arityMap);
+        }
     }
 
     private static Map<NodeType, List<Node>> getNodesByType(Node root) {
@@ -525,7 +531,7 @@ public class HepatitisGP {
             List<String> compatibleFunctions = functions.entrySet().stream()
                     .filter(e -> e.getValue() == arity)
                     .map(Map.Entry::getKey)
-                    .collect(Collectors.toList());
+                    .toList();
 
             if (!compatibleFunctions.isEmpty()) {
                 targetNode.value = compatibleFunctions.get(random.nextInt(compatibleFunctions.size()));
