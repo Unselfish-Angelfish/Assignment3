@@ -8,12 +8,23 @@ public class HepatitisGP {
     // Configuration parameters
     private static final int POPULATION_SIZE = 500;
     private static final int MAX_GENERATIONS = 50;
-    private static final double CROSSOVER_RATE = 0.9;
-    private static final double MUTATION_RATE = 0.1;
+    private static double CROSSOVER_RATE = 0.9;
+    private static double MUTATION_RATE = 0.1;
     private static final int TOURNAMENT_SIZE = 7;
     private static final int MAX_DEPTH = 6;
     private static final int MAX_INITIAL_DEPTH = 4;
     private static final double ELITISM_RATE = 0.1;
+
+    // Fitness stagnation detection parameters
+    private static final int STAGNATION_WINDOW = 5;  // How many generations to consider for stagnation
+    private static final double STAGNATION_THRESHOLD = 0.005;  // Minimum improvement required to not be stagnant
+    private static final double MAX_MUTATION_RATE = 0.3;  // Upper bound on mutation rate
+    private static final double MIN_MUTATION_RATE = 0.05;  // Lower bound on mutation rate
+    private static final double MAX_CROSSOVER_RATE = 0.95;  // Upper bound on crossover rate
+    private static final double MIN_CROSSOVER_RATE = 0.7;  // Lower bound on crossover rate
+
+    // Track population stats for adaptation
+    private static final List<Double> recentBestFitnesses = new ArrayList<>();
 
     // Dataset
     private static List<double[]> features = new ArrayList<>();
@@ -91,10 +102,16 @@ public class HepatitisGP {
         loadDataset("hepatitis.csv");
 
         System.out.println("\n=== Running Regular GP ===");
+        long start  = System.currentTimeMillis();
         runGP(false);
 
+        System.out.println("Time Taken to run Traditional GP: " + (System.currentTimeMillis() - start) + " ms");
+
         System.out.println("\n=== Running Structure-Based GP ===");
+        start = System.currentTimeMillis();
         runGP(true);
+
+        System.out.println("Time Taken to run Structure-based GP: " + (System.currentTimeMillis() - start) + " ms");
 
         compareResults();
     }
@@ -188,15 +205,21 @@ public class HepatitisGP {
         System.out.printf("│ Total Positive (2) │ %d (%.2f%%)\n", tp + fn, 100.0*(tp + fn)/total);
     }
 
+    // Modified runGP method to include adaptive parameter adjustment
     private static void runGP(boolean structureBased) {
         // Track metrics across multiple runs
         List<Double> bestFitnesses = new ArrayList<>();
         List<Double> avgFitnesses = new ArrayList<>();
         List<Double> accuracies = new ArrayList<>();
 
+        // Reset parameters to defaults at the start of each run
+        CROSSOVER_RATE = 0.9;
+        MUTATION_RATE = 0.1;
+
         // Perform 10 runs
-        for (int run = 0; run < 1; run++) {
+        for (int run = 0; run < 10; run++) {
             System.out.println("Run " + (run + 1) + " of 10");
+            recentBestFitnesses.clear();  // Clear fitness history for new run
 
             // Initialize population
             List<Node> population = initializePopulation();
@@ -210,19 +233,35 @@ public class HepatitisGP {
             // Evolution loop
             for (int gen = 0; gen < MAX_GENERATIONS; gen++) {
                 // Find the best individual in this generation
+                double generationBestFitness = Double.NEGATIVE_INFINITY;
                 for (Map.Entry<Node, Double> entry : fitnesses.entrySet()) {
-                    if (entry.getValue() > bestFitness) {
-                        bestFitness = entry.getValue();
+                    double fitness = entry.getValue();
+                    if (fitness > generationBestFitness) {
+                        generationBestFitness = fitness;
+                    }
+                    if (fitness > bestFitness) {
+                        bestFitness = fitness;
                         bestIndividual = entry.getKey();
                     }
+                }
+
+                // Store this generation's best fitness for stagnation detection
+                recentBestFitnesses.add(generationBestFitness);
+                if (recentBestFitnesses.size() > STAGNATION_WINDOW) {
+                    recentBestFitnesses.remove(0);  // Keep only the most recent window
+                }
+
+                // Adjust parameters based on fitness stagnation
+                if (gen >= STAGNATION_WINDOW) {
+                    adjustParameters(structureBased);
                 }
 
                 // Calculate average fitness
                 double avgFitness = fitnesses.values().stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
 
                 if (gen % 10 == 0) {
-                    System.out.printf("Generation %d: Best fitness = %.4f, Avg fitness = %.4f%n",
-                            gen, bestFitness, avgFitness);
+                    System.out.printf("Generation %d: Best fitness = %.4f, Avg fitness = %.4f, Mutation Rate = %.2f, Crossover Rate = %.2f%n",
+                            gen, generationBestFitness, avgFitness, MUTATION_RATE, CROSSOVER_RATE);
                 }
 
                 // Create new population
@@ -327,6 +366,42 @@ public class HepatitisGP {
         System.out.println("\n=== Summary for " + (structureBased ? "Structure-Based GP" : "Regular GP") + " ===");
         System.out.printf("Best Fitness: Avg = %.4f, StdDev = %.4f%n", bestFitnessAvg, bestFitnessStd);
         System.out.printf("Accuracy: Avg = %.2f%%, StdDev = %.2f%%%n", accuracyAvg * 100, accuracyStd * 100);
+    }
+
+    /**
+     * Adaptive parameter adjustment based on fitness stagnation.
+     * If fitness becomes stagnant (not improving significantly), increase exploration.
+     * If fitness is improving well, increase exploitation.
+     */
+    private static void adjustParameters(boolean structureBased) {
+        // Need at least STAGNATION_WINDOW values to detect stagnation
+        if (recentBestFitnesses.size() < STAGNATION_WINDOW) {
+            return;
+        }
+
+        // Calculate the improvement over the window
+        double oldest = recentBestFitnesses.get(0);
+        double newest = recentBestFitnesses.get(recentBestFitnesses.size() - 1);
+        double improvement = newest - oldest;
+
+        // Check if improvement is below threshold (stagnation)
+        boolean isStagnant = improvement < STAGNATION_THRESHOLD;
+
+        if (isStagnant) {
+            // Stagnant - increase exploration
+            MUTATION_RATE = Math.min(MUTATION_RATE * 1.2, MAX_MUTATION_RATE);
+            CROSSOVER_RATE = Math.max(CROSSOVER_RATE * 0.95, MIN_CROSSOVER_RATE);
+
+            // For structure-based GP, we could apply additional exploratory mechanisms
+            if (structureBased) {
+                // Maybe increase diversity in other ways specific to structureBased GP
+                // For example, temporarily increase tree depth limit or terminal selection variety
+            }
+        } else {
+            // Good progress - focus on exploitation
+            MUTATION_RATE = Math.max(MUTATION_RATE * 0.9, MIN_MUTATION_RATE);
+            CROSSOVER_RATE = Math.min(CROSSOVER_RATE * 1.05, MAX_CROSSOVER_RATE);
+        }
     }
 
     private static void compareResults() {
