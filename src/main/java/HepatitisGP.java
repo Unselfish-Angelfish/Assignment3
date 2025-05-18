@@ -11,7 +11,7 @@ public class HepatitisGP {
     private static double CROSSOVER_RATE = 0.9;
     private static double MUTATION_RATE = 0.1;
     private static final int TOURNAMENT_SIZE = 7;
-    private static final int MAX_DEPTH = 6;
+    private static int MAX_DEPTH = 6;
     private static final int MAX_INITIAL_DEPTH = 4;
     private static final double ELITISM_RATE = 0.1;
 
@@ -25,6 +25,9 @@ public class HepatitisGP {
 
     // Track population stats for adaptation
     private static final List<Double> recentBestFitnesses = new ArrayList<>();
+    // Add to class variables
+    private static final Deque<Double> recentBestFitnesses2 = new ArrayDeque<>();
+    private static boolean isStagnant = false;
 
     // Dataset
     private static List<double[]> features = new ArrayList<>();
@@ -99,7 +102,7 @@ public class HepatitisGP {
     private static final Random random = new Random();
 
     public static void main(String[] args) throws IOException {
-        loadDataset("hepatitis.csv");
+        loadDataset("hepatitis_balanced.csv");
 
         System.out.println("\n=== Running Regular GP ===");
         long start  = System.currentTimeMillis();
@@ -217,7 +220,7 @@ public class HepatitisGP {
         MUTATION_RATE = 0.1;
 
         // Perform 10 runs
-        for (int run = 0; run < 10; run++) {
+        for (int run = 0; run < 1; run++) {
             System.out.println("Run " + (run + 1) + " of 10");
             recentBestFitnesses.clear();  // Clear fitness history for new run
 
@@ -323,6 +326,13 @@ public class HepatitisGP {
 
                 // Evaluate new population
                 fitnesses = evaluatePopulation(population);
+
+                // Modified evolution loop section
+                // After calculating generationBestFitness:
+                recentBestFitnesses2.addLast(generationBestFitness);
+                if (recentBestFitnesses2.size() > STAGNATION_WINDOW) {
+                    recentBestFitnesses2.removeFirst();
+                }
             }
 
             // Evaluate final best individual
@@ -373,35 +383,48 @@ public class HepatitisGP {
      * If fitness becomes stagnant (not improving significantly), increase exploration.
      * If fitness is improving well, increase exploitation.
      */
+    // Modified parameter adjustment method
     private static void adjustParameters(boolean structureBased) {
-        // Need at least STAGNATION_WINDOW values to detect stagnation
-        if (recentBestFitnesses.size() < STAGNATION_WINDOW) {
-            return;
-        }
+        if (recentBestFitnesses.size() < STAGNATION_WINDOW) return;
 
-        // Calculate the improvement over the window
-        double oldest = recentBestFitnesses.get(0);
-        double newest = recentBestFitnesses.get(recentBestFitnesses.size() - 1);
-        double improvement = newest - oldest;
+        // Calculate improvement rate using linear regression
+        double[] x = IntStream.range(0, STAGNATION_WINDOW).asDoubleStream().toArray();
+        double[] y = recentBestFitnesses.stream().mapToDouble(Double::doubleValue).toArray();
 
-        // Check if improvement is below threshold (stagnation)
-        boolean isStagnant = improvement < STAGNATION_THRESHOLD;
+        double slope = calculateSlope(x, y);
+        isStagnant = Math.abs(slope) < STAGNATION_THRESHOLD;
 
         if (isStagnant) {
-            // Stagnant - increase exploration
-            MUTATION_RATE = Math.min(MUTATION_RATE * 1.2, MAX_MUTATION_RATE);
-            CROSSOVER_RATE = Math.max(CROSSOVER_RATE * 0.95, MIN_CROSSOVER_RATE);
+            // Aggressive exploration strategy
+            MUTATION_RATE = Math.min(MUTATION_RATE * 1.5, MAX_MUTATION_RATE);
+            CROSSOVER_RATE = Math.max(CROSSOVER_RATE * 0.8, MIN_CROSSOVER_RATE);
 
-            // For structure-based GP, we could apply additional exploratory mechanisms
             if (structureBased) {
-                // Maybe increase diversity in other ways specific to structureBased GP
-                // For example, temporarily increase tree depth limit or terminal selection variety
+                // Additional structural diversity measures
+                MAX_DEPTH += 1;  // Allow larger structures
+                MUTATION_RATE = Math.min(MUTATION_RATE * 1.2, MAX_MUTATION_RATE);
             }
         } else {
-            // Good progress - focus on exploitation
-            MUTATION_RATE = Math.max(MUTATION_RATE * 0.9, MIN_MUTATION_RATE);
-            CROSSOVER_RATE = Math.min(CROSSOVER_RATE * 1.05, MAX_CROSSOVER_RATE);
+            // Focused exploitation strategy
+            MUTATION_RATE = Math.max(MUTATION_RATE * 0.7, MIN_MUTATION_RATE);
+            CROSSOVER_RATE = Math.min(CROSSOVER_RATE * 1.1, MAX_CROSSOVER_RATE);
+
+            if (structureBased) {
+                // Structural refinement measures
+                MAX_DEPTH = Math.max(MAX_DEPTH - 1, 4);
+            }
         }
+    }
+
+    // New helper method for trend analysis
+    private static double calculateSlope(double[] x, double[] y) {
+        double n = x.length;
+        double sumX = Arrays.stream(x).sum();
+        double sumY = Arrays.stream(y).sum();
+        double sumXY = IntStream.range(0, x.length).mapToDouble(i -> x[i] * y[i]).sum();
+        double sumX2 = Arrays.stream(x).map(v -> v * v).sum();
+
+        return (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
     }
 
     private static void compareResults() {
@@ -707,30 +730,43 @@ public class HepatitisGP {
         }
     }
 
-    // Structure-based GP mutation
+    // Add structural diversity in mutation
     private static void structureMutation(Node node) {
         List<Node> allNodes = getAllNodes(node);
-
-        if (allNodes.isEmpty()) {
-            return;
-        }
-
-        // Select a random node to mutate
         Node targetNode = allNodes.get(random.nextInt(allNodes.size()));
 
-        if (targetNode.type == NodeType.TERMINAL) {
-            // For terminals, just replace with another terminal
-            targetNode.value = createRandomTerminal().value;
+        if (isStagnant) {
+            // Exploration-focused mutation
+            if (targetNode.type == NodeType.FUNCTION) {
+                // Replace with random subtree
+                Node newSubtree = growTree(0, MAX_DEPTH);
+                copyNodeContents(newSubtree, targetNode);
+            } else {
+                // Randomize terminal value
+                targetNode.value = createRandomTerminal().value;
+            }
         } else {
-            // For functions, replace with another function of the same arity
-            int arity = functions.get(targetNode.value);
-            List<String> compatibleFunctions = functions.entrySet().stream()
-                    .filter(e -> e.getValue() == arity)
-                    .map(Map.Entry::getKey)
-                    .toList();
-
-            if (!compatibleFunctions.isEmpty()) {
-                targetNode.value = compatibleFunctions.get(random.nextInt(compatibleFunctions.size()));
+            // Exploitation-focused mutation
+            if (targetNode.type == NodeType.FUNCTION) {
+                // Mutate function type preserving arity
+                List<String> options = functions.keySet().stream()
+                        .filter(f -> functions.get(f) == targetNode.children.size())
+                        .collect(Collectors.toList());
+                targetNode.value = options.get(random.nextInt(options.size()));
+            } else {
+                // Small terminal adjustment
+                if (targetNode.value.startsWith("x")) {
+                    // Feature index perturbation
+                    int feature = Integer.parseInt(targetNode.value.substring(1));
+                    feature = Math.abs(feature + random.nextInt(3) - 1) % featureNames.length;
+                    targetNode.value = "x" + feature;
+                } else {
+                    // Numerical constant adjustment
+                    targetNode.value = targetNode.value.replace(",", ".");
+                    double val = Double.parseDouble(targetNode.value);
+                    val += random.nextGaussian() * 0.1;
+                    targetNode.value = String.format("%.2f", val);
+                }
             }
         }
     }
