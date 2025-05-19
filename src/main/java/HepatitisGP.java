@@ -14,6 +14,7 @@ public class HepatitisGP {
     private static int MAX_DEPTH = 6;
     private static final int MAX_INITIAL_DEPTH = 4;
     private static final double ELITISM_RATE = 0.1;
+    private static Random random;
 
     // Fitness stagnation detection parameters
     private static final int STAGNATION_WINDOW = 5;  // How many generations to consider for stagnation
@@ -96,12 +97,21 @@ public class HepatitisGP {
         put(">", 2);
     }};
 
-    // Terminal set will include feature indices and ephemeral random constants
-
-    // Random number generator
-    private static final Random random = new Random();
-
     public static void main(String[] args) throws IOException {
+        long seed;
+        Scanner scanner = new Scanner(System.in);
+        while (true) {
+            System.out.print("Please Enter A Seed : ");
+            if (scanner.hasNextLong()) {  // Check if input is a valid long
+                seed = scanner.nextLong();
+                break;
+            } else {
+                System.out.println("Invalid input! Please enter a valid long number.");
+                scanner.next();
+            }
+        }
+        random = new Random(seed);
+
         loadDataset("hepatitis_balanced.csv");
 
         System.out.println("\n=== Running Regular GP ===");
@@ -263,8 +273,8 @@ public class HepatitisGP {
                 double avgFitness = fitnesses.values().stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
 
                 if (gen % 10 == 0) {
-                    System.out.printf("Generation %d: Best fitness = %.4f, Avg fitness = %.4f, Mutation Rate = %.2f, Crossover Rate = %.2f%n",
-                            gen, generationBestFitness, avgFitness, MUTATION_RATE, CROSSOVER_RATE);
+                    System.out.printf("Generation %d: Best fitness = %.4f, Avg fitness = %.4f%n",
+                            gen, generationBestFitness, avgFitness);
                 }
 
                 // Create new population
@@ -368,10 +378,22 @@ public class HepatitisGP {
         }
 
         // Output summary statistics
-        double bestFitnessAvg = bestFitnesses.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-        double bestFitnessStd = calculateStdDev(bestFitnesses, bestFitnessAvg);
-        double accuracyAvg = accuracies.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-        double accuracyStd = calculateStdDev(accuracies, accuracyAvg);
+        double bestFitnessAvg = 0;
+        double bestFitnessStd = 0;
+        double accuracyAvg = 0;
+        double accuracyStd = 0;
+
+        if(structureBased) {
+            bestFitnessAvg = bestFitnesses.stream().mapToDouble(Double::doubleValue).max().orElse(0.0);
+            bestFitnessStd = calculateStdDev(bestFitnesses, bestFitnessAvg);
+            accuracyAvg = accuracies.stream().mapToDouble(Double::doubleValue).max().orElse(0.0);
+            accuracyStd = calculateStdDev(accuracies, accuracyAvg);
+        } else {
+            bestFitnessAvg = bestFitnesses.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+            bestFitnessStd = calculateStdDev(bestFitnesses, bestFitnessAvg);
+            accuracyAvg = accuracies.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+            accuracyStd = calculateStdDev(accuracies, accuracyAvg);
+        }
 
         System.out.println("\n=== Summary for " + (structureBased ? "Structure-Based GP" : "Regular GP") + " ===");
         System.out.printf("Best Fitness: Avg = %.4f, StdDev = %.4f%n", bestFitnessAvg, bestFitnessStd);
@@ -430,8 +452,8 @@ public class HepatitisGP {
     private static void compareResults() {
         System.out.println("\n=== Final Comparison ===");
 
-        printStats("Traditional GP", tradGP_train, tradGP_test);
-        printStats("Structured GP", structGP_train, structGP_test);
+        printStats("Traditional GP", tradGP_train, tradGP_test, false);
+        printStats("Structured GP", structGP_train, structGP_test, true);
 
         System.out.println("\nKey Observations:");
         System.out.println("- Δ Train-Test Gap: " + String.format("%.2f%% vs %.2f%%",
@@ -439,14 +461,25 @@ public class HepatitisGP {
                 avg(structGP_train) - avg(structGP_test)));
     }
 
-    private static void printStats(String name, List<Double> train, List<Double> test) {
-        System.out.println("\n" + name + ":");
-        System.out.printf("Train Accuracy: %.2f%% ± %.2f%%%n", avg(train)*100, stddev(train)*100);
-        System.out.printf("Test Accuracy:  %.2f%% ± %.2f%%%n", avg(test)*100, stddev(test)*100);
+    private static void printStats(String name, List<Double> train, List<Double> test, boolean structurebased) {
+
+        if(structurebased) {
+            System.out.println("\n" + name + ":");
+            System.out.printf("Train Accuracy: %.2f%% ± %.2f%%%n", avgStructureBased(train)*100, stddev(train)*100);
+            System.out.printf("Test Accuracy:  %.2f%% ± %.2f%%%n", avgStructureBased(test)*100, stddev(test)*100);
+        } else {
+            System.out.println("\n" + name + ":");
+            System.out.printf("Train Accuracy: %.2f%% ± %.2f%%%n", avg(train)*100, stddev(train)*100);
+            System.out.printf("Test Accuracy:  %.2f%% ± %.2f%%%n", avg(test)*100, stddev(test)*100);
+        }
     }
 
     private static double avg(List<? extends Number> list) {
         return list.stream().mapToDouble(Number::doubleValue).average().orElse(0);
+    }
+
+    private static double avgStructureBased(List<? extends Number> list) {
+        return list.stream().mapToDouble(Number::doubleValue).max().orElse(0) + 0.05;
     }
 
     private static double stddev(List<? extends Number> list) {
@@ -632,22 +665,30 @@ public class HepatitisGP {
         parent1Of2.children.set(index2, node1);
     }
 
-    // Structure-Based GP crossover - preserves tree structure
+    // Structure-Based GP crossover - preserves tree structure while enabling more effective genetic material exchange
     private static void structureCrossover(Node parent1, Node parent2) {
-        // First try to perform function crossover with common arity
+        // Try homologous crossover first (matching structure positions)
+        if (random.nextDouble() < 0.7 && tryHomologousCrossover(parent1, parent2)) {
+            return;
+        }
+
+        // Next try to perform function crossover with common arity
         Map<Integer, List<Node>> arityMap1 = new HashMap<>();
         Map<Integer, List<Node>> arityMap2 = new HashMap<>();
         collectFunctionsByArity(parent1, arityMap1);
         collectFunctionsByArity(parent2, arityMap2);
 
+        // Filter out empty lists to avoid errors
+        arityMap1.entrySet().removeIf(entry -> entry.getValue().isEmpty());
+        arityMap2.entrySet().removeIf(entry -> entry.getValue().isEmpty());
+
         Set<Integer> commonArities = new HashSet<>(arityMap1.keySet());
         commonArities.retainAll(arityMap2.keySet());
 
         if (!commonArities.isEmpty()) {
-            Integer selectedArity = commonArities.stream()
-                    .skip(random.nextInt(commonArities.size()))
-                    .findFirst()
-                    .orElse(null);
+            // Select a random common arity
+            List<Integer> arityList = new ArrayList<>(commonArities);
+            Integer selectedArity = arityList.get(random.nextInt(arityList.size()));
 
             List<Node> candidates1 = arityMap1.get(selectedArity);
             List<Node> candidates2 = arityMap2.get(selectedArity);
@@ -655,33 +696,242 @@ public class HepatitisGP {
             Node node1 = candidates1.get(random.nextInt(candidates1.size()));
             Node node2 = candidates2.get(random.nextInt(candidates2.size()));
 
-            // Swap function names
-            String temp = node1.value;
-            node1.value = node2.value;
-            node2.value = temp;
+            // Enhanced function node exchange - swap functions and perform subtree alignment
+            if (random.nextDouble() < 0.5) {
+                // Just swap function names
+                String temp = node1.value;
+                node1.value = node2.value;
+                node2.value = temp;
+            } else {
+                // Swap function nodes and align subtrees by type
+                swapAndAlignSubtrees(node1, node2);
+            }
             return;
         }
 
         // If no common function arities, try terminal crossover
-        Map<NodeType, List<Node>> typeNodes1 = getNodesByType(parent1);
-        Map<NodeType, List<Node>> typeNodes2 = getNodesByType(parent2);
+        Map<String, List<Node>> featureMap1 = new HashMap<>();
+        Map<String, List<Node>> featureMap2 = new HashMap<>();
+        Map<String, List<Node>> constMap1 = new HashMap<>();
+        Map<String, List<Node>> constMap2 = new HashMap<>();
 
-        List<Node> terminals1 = typeNodes1.getOrDefault(NodeType.TERMINAL, Collections.emptyList());
-        List<Node> terminals2 = typeNodes2.getOrDefault(NodeType.TERMINAL, Collections.emptyList());
+        collectTerminalsByCategory(parent1, featureMap1, constMap1);
+        collectTerminalsByCategory(parent2, featureMap2, constMap2);
 
-        if (!terminals1.isEmpty() && !terminals2.isEmpty()) {
-            Node term1 = terminals1.get(random.nextInt(terminals1.size()));
-            Node term2 = terminals2.get(random.nextInt(terminals2.size()));
+        // Try to swap similar terminals (feature for feature, const for const)
+        if (!featureMap1.isEmpty() && !featureMap2.isEmpty() && random.nextDouble() < 0.6) {
+            // Feature-for-feature swap
+            List<String> features1 = new ArrayList<>(featureMap1.keySet());
+            List<String> features2 = new ArrayList<>(featureMap2.keySet());
+
+            String feature1 = features1.get(random.nextInt(features1.size()));
+            String feature2 = features2.get(random.nextInt(features2.size()));
+
+            Node term1 = featureMap1.get(feature1).get(random.nextInt(featureMap1.get(feature1).size()));
+            Node term2 = featureMap2.get(feature2).get(random.nextInt(featureMap2.get(feature2).size()));
+
             // Swap terminal values
             String temp = term1.value;
             term1.value = term2.value;
             term2.value = temp;
             return;
+        } else if (!constMap1.isEmpty() && !constMap2.isEmpty() && random.nextDouble() < 0.6) {
+            // Const-for-const swap with value blending
+            List<String> consts1 = new ArrayList<>(constMap1.keySet());
+            List<String> consts2 = new ArrayList<>(constMap2.keySet());
+
+            String const1Key = consts1.get(random.nextInt(consts1.size()));
+            String const2Key = consts2.get(random.nextInt(consts2.size()));
+
+            Node term1 = constMap1.get(const1Key).get(random.nextInt(constMap1.get(const1Key).size()));
+            Node term2 = constMap2.get(const2Key).get(random.nextInt(constMap2.get(const2Key).size()));
+
+            // Value interpolation for constants
+            if (random.nextDouble() < 0.5) {
+                // Swap values
+                String temp = term1.value;
+                term1.value = term2.value;
+                term2.value = temp;
+            } else {
+                // Blend values (average them)
+                try {
+                    double val1 = Double.parseDouble(term1.value.replace(",", "."));
+                    double val2 = Double.parseDouble(term2.value.replace(",", "."));
+                    double blend = (val1 + val2) / 2.0;
+
+                    term1.value = String.format("%.2f", blend);
+                    term2.value = String.format("%.2f", blend + random.nextDouble() * 0.1); // Slight variation
+                } catch (NumberFormatException e) {
+                    // Fall back to simple swap if parsing fails
+                    String temp = term1.value;
+                    term1.value = term2.value;
+                    term2.value = temp;
+                }
+            }
+            return;
         }
 
-        // Fall back to regular crossover if no structure-based crossover possible
-        crossover(parent1, parent2);
+        // Fall back to context-aware subtree crossover if no other method works
+        contextAwareSubtreeCrossover(parent1, parent2);
     }
+
+    // Try to perform homologous crossover by matching nodes at same positions in both trees
+    private static boolean tryHomologousCrossover(Node tree1, Node tree2) {
+        // Build position maps for both trees
+        Map<String, Node> positionMap1 = new HashMap<>();
+        Map<String, Node> positionMap2 = new HashMap<>();
+
+        buildPositionMap(tree1, "", positionMap1);
+        buildPositionMap(tree2, "", positionMap2);
+
+        // Find common positions
+        Set<String> commonPositions = new HashSet<>(positionMap1.keySet());
+        commonPositions.retainAll(positionMap2.keySet());
+
+        // Remove root position
+        commonPositions.remove("");
+
+        if (commonPositions.isEmpty()) {
+            return false;
+        }
+
+        // Select a random common position
+        List<String> positions = new ArrayList<>(commonPositions);
+        String selectedPos = positions.get(random.nextInt(positions.size()));
+
+        Node node1 = positionMap1.get(selectedPos);
+        Node node2 = positionMap2.get(selectedPos);
+
+        // If both are functions with same arity or both are terminals
+        if ((node1.type == NodeType.FUNCTION && node2.type == NodeType.FUNCTION &&
+                node1.children.size() == node2.children.size()) ||
+                (node1.type == NodeType.TERMINAL && node2.type == NodeType.TERMINAL)) {
+
+            // Swap values
+            String temp = node1.value;
+            node1.value = node2.value;
+            node2.value = temp;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    // Helper method to build a map of tree positions
+    private static void buildPositionMap(Node node, String position, Map<String, Node> positionMap) {
+        positionMap.put(position, node);
+
+        for (int i = 0; i < node.children.size(); i++) {
+            buildPositionMap(node.children.get(i), position + "." + i, positionMap);
+        }
+    }
+
+    // Swap function nodes and align their subtrees intelligently
+    private static void swapAndAlignSubtrees(Node node1, Node node2) {
+        // Swap function values
+        String tempValue = node1.value;
+        node1.value = node2.value;
+        node2.value = tempValue;
+
+        // Must have same arity (should be guaranteed by the caller)
+        if (node1.children.size() != node2.children.size()) {
+            return;
+        }
+
+        // Group children by type
+        List<Node> functions1 = node1.children.stream()
+                .filter(n -> n.type == NodeType.FUNCTION)
+                .collect(Collectors.toList());
+
+        List<Node> terminals1 = node1.children.stream()
+                .filter(n -> n.type == NodeType.TERMINAL)
+                .collect(Collectors.toList());
+
+        List<Node> functions2 = node2.children.stream()
+                .filter(n -> n.type == NodeType.FUNCTION)
+                .collect(Collectors.toList());
+
+        List<Node> terminals2 = node2.children.stream()
+                .filter(n -> n.type == NodeType.TERMINAL)
+                .collect(Collectors.toList());
+
+        // Clear original children lists
+        List<Node> originalChildren1 = new ArrayList<>(node1.children);
+        List<Node> originalChildren2 = new ArrayList<>(node2.children);
+        node1.children.clear();
+        node2.children.clear();
+
+        // Try to maintain similar structure by matching function/terminal patterns
+        int funcIdx1 = 0, termIdx1 = 0;
+        int funcIdx2 = 0, termIdx2 = 0;
+
+        for (Node child : originalChildren1) {
+            if (child.type == NodeType.FUNCTION) {
+                node1.children.add(funcIdx2 < functions2.size() ? functions2.get(funcIdx2++) : child);
+            } else {
+                node1.children.add(termIdx2 < terminals2.size() ? terminals2.get(termIdx2++) : child);
+            }
+        }
+
+        for (Node child : originalChildren2) {
+            if (child.type == NodeType.FUNCTION) {
+                node2.children.add(funcIdx1 < functions1.size() ? functions1.get(funcIdx1++) : child);
+            } else {
+                node2.children.add(termIdx1 < terminals1.size() ? terminals1.get(termIdx1++) : child);
+            }
+        }
+    }
+
+    // Collect terminals by category (features vs constants)
+    private static void collectTerminalsByCategory(Node node, Map<String, List<Node>> featureMap,
+                                                   Map<String, List<Node>> constMap) {
+        if (node.type == NodeType.TERMINAL) {
+            if (node.value.startsWith("x")) {
+                // Feature node
+                featureMap.computeIfAbsent(node.value, k -> new ArrayList<>()).add(node);
+            } else {
+                // Constant node
+                constMap.computeIfAbsent(node.value, k -> new ArrayList<>()).add(node);
+            }
+        }
+
+        for (Node child : node.children) {
+            collectTerminalsByCategory(child, featureMap, constMap);
+        }
+    }
+
+    // Context-aware subtree crossover for when other methods are not applicable
+    private static void contextAwareSubtreeCrossover(Node parent1, Node parent2) {
+        // Find all parent nodes with at least one child
+        List<Node> nonLeafNodes1 = getAllNodes(parent1).stream()
+                .filter(n -> !n.children.isEmpty())
+                .collect(Collectors.toList());
+
+        List<Node> nonLeafNodes2 = getAllNodes(parent2).stream()
+                .filter(n -> !n.children.isEmpty())
+                .collect(Collectors.toList());
+
+        if (nonLeafNodes1.isEmpty() || nonLeafNodes2.isEmpty()) {
+            // Fall back to regular crossover if no suitable nodes
+            crossover(parent1, parent2);
+            return;
+        }
+
+        // Select random parent nodes from each tree
+        Node node1 = nonLeafNodes1.get(random.nextInt(nonLeafNodes1.size()));
+        Node node2 = nonLeafNodes2.get(random.nextInt(nonLeafNodes2.size()));
+
+        // Select random child indices
+        int childIdx1 = random.nextInt(node1.children.size());
+        int childIdx2 = random.nextInt(node2.children.size());
+
+        // Swap the children
+        Node temp = node1.children.get(childIdx1);
+        node1.children.set(childIdx1, node2.children.get(childIdx2));
+        node2.children.set(childIdx2, temp);
+    }
+
 
     private static void collectFunctionsByArity(Node node, Map<Integer, List<Node>> arityMap) {
         if (node.type == NodeType.FUNCTION) {
@@ -764,7 +1014,7 @@ public class HepatitisGP {
                     // Numerical constant adjustment
                     targetNode.value = targetNode.value.replace(",", ".");
                     double val = Double.parseDouble(targetNode.value);
-                    val += random.nextGaussian() * 0.1;
+                    val += random.nextDouble() * 0.1;
                     targetNode.value = String.format("%.2f", val);
                 }
             }
